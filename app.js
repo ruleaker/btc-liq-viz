@@ -593,6 +593,25 @@ async function getEnvelope() {
   return envelopePromise;
 }
 
+// Optional live blob — produced hourly by an external job. Absence is fine.
+async function tryLiveBlob() {
+  try {
+    const r = await fetch("data/live.enc.json", { cache: "no-cache" });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+function mergeRecords(historical, live) {
+  // Live wins on overlap. Returns a fresh sorted array.
+  const m = new Map();
+  for (const r of historical) m.set(r.t, r);
+  for (const r of live)       m.set(r.t, r);
+  return [...m.values()].sort((a, b) => a.t - b.t);
+}
+
 async function handleSubmit(e) {
   e.preventDefault();
   const password = els.input.value;
@@ -611,8 +630,21 @@ async function handleSubmit(e) {
     applySettingsToForm();
     refreshLegend();
     wireToolbar();
-    renderAll(data.records);
-    // Bridge bundled dataset to "now" without blocking initial render
+
+    // Try to decrypt the live blob with the same password before rendering,
+    // so the initial draw already includes our own data
+    let records = data.records;
+    const liveEnv = await tryLiveBlob();
+    if (liveEnv) {
+      try {
+        const live = await decryptPayload(liveEnv, password);
+        records = mergeRecords(data.records, live.records);
+        console.info(`merged ${live.records.length} live records`);
+      } catch (e) {
+        console.warn("live blob decrypt failed (different password?):", e);
+      }
+    }
+    renderAll(records);
     extendToNow().catch(err => console.warn("extend:", err));
   } catch (err) {
     btn.disabled = false;
