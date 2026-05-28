@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BTC Liquidity</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%E2%97%89%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+
+  <header id="topbar">
+    <div class="brand">BTC&nbsp;Liquidity</div>
+    <div id="status" class="status">locked</div>
+    <div class="legend">
+      <span class="legend-item"><span class="dot ma720"></span>MA720</span>
+      <span class="legend-item"><span class="dot ma8400"></span>MA8400</span>
+      <span class="legend-item"><span class="dot liq-pos"></span>LIQ&nbsp;+</span>
+      <span class="legend-item"><span class="dot liq-neg"></span>LIQ&nbsp;−</span>
+    </div>
+  </header>
+
+  <main id="chart"></main>
+
+  <footer id="readout">
+    <span id="hover-info">hover the chart</span>
+  </footer>
+
+  <!-- Password gate -->
+  <div id="gate" class="gate">
+    <form id="gate-form" class="gate-card" autocomplete="off">
+      <div class="gate-title">enter passphrase</div>
+      <input id="gate-input" type="password" autocomplete="off" autofocus />
+      <button type="submit">unlock</button>
+      <div id="gate-error" class="gate-error"></div>
+    </form>
+  </div>
+
+  <script src="https://unpkg.com/lightweight-charts@5.0.7/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

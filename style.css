@@ -1,0 +1,158 @@
+:root {
+  --bg: #0d1117;
+  --bg2: #131722;
+  --line: #1f2937;
+  --fg: #d9d9d9;
+  --muted: #6b7280;
+  --green: #26a69a;
+  --red: #ef5350;
+  --ma720: #2962ff;
+  --ma8400: #ff9800;
+  --accent: #6c1ce6;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 8px 14px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--line);
+  height: 38px;
+  flex-shrink: 0;
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--fg);
+}
+
+.status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--line);
+  color: var(--muted);
+  text-transform: lowercase;
+}
+.status.ok    { color: var(--green); background: rgba(38,166,154,0.12); }
+.status.busy  { color: var(--ma8400); background: rgba(255,152,0,0.12); }
+.status.err   { color: var(--red);   background: rgba(239,83,80,0.12); }
+
+.legend {
+  display: flex;
+  gap: 14px;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot.ma720   { background: var(--ma720); }
+.dot.ma8400  { background: var(--ma8400); }
+.dot.liq-pos { background: var(--green); }
+.dot.liq-neg { background: var(--red); }
+
+#chart {
+  height: calc(100vh - 38px - 26px);
+  width: 100vw;
+}
+
+#readout {
+  height: 26px;
+  background: var(--bg2);
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+#readout .k { color: var(--muted); margin-right: 4px; }
+#readout .v { color: var(--fg); margin-right: 14px; }
+#readout .pos { color: var(--green); }
+#readout .neg { color: var(--red); }
+
+/* Password gate */
+.gate {
+  position: fixed;
+  inset: 0;
+  background: rgba(13, 17, 23, 0.94);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  transition: opacity 0.3s;
+}
+.gate.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.gate-card {
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  padding: 28px 32px;
+  border-radius: 6px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.gate-title {
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.gate-card input[type="password"] {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  padding: 9px 12px;
+  border-radius: 3px;
+  font-size: 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  outline: none;
+}
+.gate-card input[type="password"]:focus { border-color: var(--accent); }
+.gate-card button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 9px;
+  border-radius: 3px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  letter-spacing: 0.4px;
+}
+.gate-card button:hover { filter: brightness(1.15); }
+.gate-card button:disabled { background: var(--line); color: var(--muted); cursor: wait; }
+.gate-error {
+  font-size: 11px;
+  color: var(--red);
+  min-height: 14px;
+}
+.shake { animation: shake 0.35s; }
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
