@@ -137,8 +137,9 @@ let chart;
 let candleSeries, volSeries, liqSeries, maFastSeries, maSlowSeries;
 let candleByTime = new Map();
 let recByTime = new Map();
-let allRecords = [];     // raw decrypted records, used on re-render
-let allCandles = [];
+let allRecords = [];     // LIQ records (encrypted portion only)
+let allCandles = [];     // all OHLC including extension
+let allVolumes = [];     // matching volume bars
 let markerHandle = null;
 
 // Drawings: persisted to localStorage
@@ -223,22 +224,22 @@ function buildChart() {
 // Render data + re-render hooks
 // --------------------------------------------------------------------------
 function colorForLiq(v) {
-  if (v == null) return "rgba(120,120,120,0.45)";
-  if (v >=  settings.thrPos) return "rgba(38,166,154,0.95)";    // bright green
-  if (v <=  settings.thrNeg) return "rgba(239,83,80,0.95)";     // bright red
-  if (v >= 0) return "rgba(38,166,154,0.30)";                   // muted green
-  return "rgba(239,83,80,0.30)";                                // muted red
+  // Bright green / red only when beyond threshold; otherwise neutral gray.
+  if (v == null) return "rgba(120,120,120,0.30)";
+  if (v >= settings.thrPos) return "rgba(38,166,154,0.95)";
+  if (v <= settings.thrNeg) return "rgba(239,83,80,0.95)";
+  return "rgba(140,148,160,0.42)";
 }
 
 function renderAll(records) {
   allRecords = records;
   allCandles = [];
-  const volumes = [];
+  allVolumes = [];
   for (const r of records) {
     if (!r.k) continue;
     const [o, h, l, c, v] = r.k;
     allCandles.push({ time: r.t, open: o, high: h, low: l, close: c });
-    volumes.push({
+    allVolumes.push({
       time: r.t,
       value: v,
       color: c >= o ? "rgba(38,166,154,0.55)" : "rgba(239,83,80,0.55)",
@@ -248,7 +249,7 @@ function renderAll(records) {
   recByTime   = new Map(records.map(r => [r.t, r]));
 
   candleSeries.setData(allCandles);
-  volSeries.setData(volumes);
+  volSeries.setData(allVolumes);
   refreshMAs();
   refreshLiqBars();
   refreshLiqRefLines();
@@ -258,6 +259,78 @@ function renderAll(records) {
 
   chart.timeScale().fitContent();
   setStatus(`ok · ${allCandles.length.toLocaleString()} bars`, "ok");
+}
+
+// --------------------------------------------------------------------------
+// Bridge to the present: pull public OHLCV for the gap between the bundled
+// dataset's last bar and now, so the chart extends to "live" even before
+// the live signal stream is wired up. Signal pane stays empty for this range.
+// --------------------------------------------------------------------------
+const PUBLIC_OHLCV_URL = "https://data-api.binance.vision/api/v3/klines";
+const PUBLIC_SYMBOL    = "BTCUSDT";
+const PUBLIC_INTERVAL  = "1h";
+const HOUR_MS = 3600 * 1000;
+
+async function fetchOHLCVRange(fromSec, toSec) {
+  const candles = [];
+  const volumes = [];
+  let cursorMs = fromSec * 1000;
+  const endMs  = toSec * 1000;
+  while (cursorMs <= endMs) {
+    const u = new URL(PUBLIC_OHLCV_URL);
+    u.searchParams.set("symbol",   PUBLIC_SYMBOL);
+    u.searchParams.set("interval", PUBLIC_INTERVAL);
+    u.searchParams.set("startTime", cursorMs);
+    u.searchParams.set("endTime",   Math.min(cursorMs + 1000 * HOUR_MS - 1, endMs));
+    u.searchParams.set("limit", 1000);
+    const r = await fetch(u.toString());
+    if (!r.ok) throw new Error("ohlcv http " + r.status);
+    const rows = await r.json();
+    if (!rows.length) break;
+    for (const k of rows) {
+      const t = Math.floor(k[0] / 1000);
+      const o = +k[1], h = +k[2], l = +k[3], c = +k[4], v = +k[5];
+      candles.push({ time: t, open: o, high: h, low: l, close: c });
+      volumes.push({
+        time: t, value: v,
+        color: c >= o ? "rgba(38,166,154,0.55)" : "rgba(239,83,80,0.55)",
+      });
+    }
+    const lastOpenMs = rows[rows.length - 1][0];
+    const prev = cursorMs;
+    cursorMs = lastOpenMs + HOUR_MS;
+    if (cursorMs <= prev) break;
+  }
+  return { candles, volumes };
+}
+
+async function extendToNow() {
+  if (!allCandles.length) return;
+  const lastT = allCandles[allCandles.length - 1].time;
+  const nowT  = Math.floor(Date.now() / 1000);
+  if (nowT - lastT < 3600) return;
+  setStatus("extending to now…", "busy");
+  try {
+    const { candles, volumes } = await fetchOHLCVRange(lastT + 3600, nowT);
+    if (!candles.length) {
+      setStatus(`ok · ${allCandles.length.toLocaleString()} bars`, "ok");
+      return;
+    }
+    const seen = new Set(allCandles.map(c => c.time));
+    for (let i = 0; i < candles.length; i++) {
+      if (seen.has(candles[i].time)) continue;
+      allCandles.push(candles[i]);
+      allVolumes.push(volumes[i]);
+      candleByTime.set(candles[i].time, candles[i]);
+    }
+    candleSeries.setData(allCandles);
+    volSeries.setData(allVolumes);
+    refreshMAs();
+    chart.timeScale().fitContent();
+    setStatus(`ok · ${allCandles.length.toLocaleString()} bars`, "ok");
+  } catch (err) {
+    setStatus("extend failed", "err");
+  }
 }
 
 function refreshMAs() {
@@ -450,6 +523,23 @@ function clearAllDrawings() {
 // --------------------------------------------------------------------------
 // Toolbar wiring
 // --------------------------------------------------------------------------
+function applyLive() {
+  readFormIntoSettings();
+  // Cheap refreshes always; MA is the only expensive one (re-rolls window)
+  refreshLiqBars();
+  refreshLiqRefLines();
+  refreshMarkers();
+  refreshLegend();
+}
+
+// Debounce MA recompute since it's the heavier of the bunch
+let maDebounce = null;
+function applyLiveDebouncedMA() {
+  applyLive();
+  if (maDebounce) clearTimeout(maDebounce);
+  maDebounce = setTimeout(() => { refreshMAs(); maDebounce = null; }, 150);
+}
+
 function wireToolbar() {
   els.btnHLine.addEventListener("click", () =>
     setDrawMode(drawMode === "hline" ? null : "hline"));
@@ -463,23 +553,25 @@ function wireToolbar() {
   els.btnFit.addEventListener("click", () => chart.timeScale().fitContent());
   els.btnGear.addEventListener("click", () => togglePanel(true));
   els.btnClose.addEventListener("click", () => togglePanel(false));
-  els.btnApply.addEventListener("click", () => {
-    readFormIntoSettings();
-    refreshMAs();
-    refreshLiqBars();
-    refreshLiqRefLines();
-    refreshMarkers();
-    refreshLegend();
-  });
+
+  // Live param changes — input event fires on every keystroke/spinner click
+  for (const el of [els.thrPos, els.thrNeg]) {
+    el.addEventListener("input", applyLive);
+  }
+  for (const el of [els.maFast, els.maSlow]) {
+    el.addEventListener("input", applyLiveDebouncedMA);
+  }
+  els.markers.addEventListener("change", applyLive);
+
+  // Keep Apply as a "force everything now" button (mostly redundant but
+  // useful when typing erratically); Reset still useful.
+  els.btnApply.addEventListener("click", () => { applyLive(); refreshMAs(); });
   els.btnReset.addEventListener("click", () => {
     settings = { ...DEFAULTS };
     saveSettings();
     applySettingsToForm();
     refreshMAs();
-    refreshLiqBars();
-    refreshLiqRefLines();
-    refreshMarkers();
-    refreshLegend();
+    applyLive();
   });
 }
 
@@ -520,6 +612,8 @@ async function handleSubmit(e) {
     refreshLegend();
     wireToolbar();
     renderAll(data.records);
+    // Bridge bundled dataset to "now" without blocking initial render
+    extendToNow().catch(err => console.warn("extend:", err));
   } catch (err) {
     btn.disabled = false;
     btn.textContent = "unlock";
