@@ -13,10 +13,17 @@
     <div class="brand">BTC&nbsp;Liquidity</div>
     <div id="status" class="status">locked</div>
     <div class="legend">
-      <span class="legend-item"><span class="dot ma720"></span>MA720</span>
-      <span class="legend-item"><span class="dot ma8400"></span>MA8400</span>
+      <span class="legend-item"><span class="dot ma-fast"></span><span id="lbl-ma-fast">MA720</span></span>
+      <span class="legend-item"><span class="dot ma-slow"></span><span id="lbl-ma-slow">MA8400</span></span>
       <span class="legend-item"><span class="dot liq-pos"></span>LIQ&nbsp;+</span>
       <span class="legend-item"><span class="dot liq-neg"></span>LIQ&nbsp;−</span>
+    </div>
+    <div class="tools">
+      <button class="tool-btn" id="tool-hline"  title="horizontal line">─</button>
+      <button class="tool-btn" id="tool-trend"  title="trend line">⟋</button>
+      <button class="tool-btn" id="tool-clear"  title="clear all drawings">⌫</button>
+      <button class="tool-btn" id="tool-fit"    title="fit content">⇋</button>
+      <button class="tool-btn" id="tool-settings" title="settings">⚙</button>
     </div>
   </header>
 
@@ -25,6 +32,55 @@
   <footer id="readout">
     <span id="hover-info">hover the chart</span>
   </footer>
+
+  <!-- Settings panel -->
+  <aside id="settings-panel" class="settings-panel hidden">
+    <div class="sp-head">
+      <div class="sp-title">settings</div>
+      <button class="sp-close" id="sp-close" title="close">×</button>
+    </div>
+
+    <div class="sp-section">
+      <div class="sp-label">LIQ thresholds</div>
+      <div class="sp-row">
+        <label>upper (+)</label>
+        <input type="number" id="sp-thr-pos" step="0.1" min="0" max="10" />
+      </div>
+      <div class="sp-row">
+        <label>lower (−)</label>
+        <input type="number" id="sp-thr-neg" step="0.1" min="-10" max="0" />
+      </div>
+      <div class="sp-hint">|LIQ| ≥ threshold → bright color + arrow marker</div>
+    </div>
+
+    <div class="sp-section">
+      <div class="sp-label">moving averages (bars)</div>
+      <div class="sp-row">
+        <label>fast (blue)</label>
+        <input type="number" id="sp-ma-fast" step="10" min="2" max="20000" />
+      </div>
+      <div class="sp-row">
+        <label>slow (orange)</label>
+        <input type="number" id="sp-ma-slow" step="10" min="2" max="20000" />
+      </div>
+    </div>
+
+    <div class="sp-section">
+      <div class="sp-label">markers</div>
+      <div class="sp-row">
+        <label>show arrows on main</label>
+        <input type="checkbox" id="sp-markers" />
+      </div>
+    </div>
+
+    <div class="sp-actions">
+      <button id="sp-apply">apply</button>
+      <button id="sp-reset" class="sp-secondary">reset defaults</button>
+    </div>
+  </aside>
+
+  <!-- Drawing mode indicator -->
+  <div id="draw-hint" class="draw-hint hidden"></div>
 
   <!-- Password gate -->
   <div id="gate" class="gate">

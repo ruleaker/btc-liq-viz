@@ -1,14 +1,45 @@
-/* Dashboard renderer. Fetches one encrypted bundle, decrypts it locally with
-   a passphrase, and draws the result with lightweight-charts. */
+/* Dashboard renderer. Fetches one encrypted bundle, decrypts locally with a
+   passphrase, and draws the result with lightweight-charts. Supports
+   adjustable parameters, threshold-coloured signal bars, arrow markers on
+   the main pane, and basic drawing tools (horizontal & trend lines).
+   Persists settings + drawings in localStorage. */
+
+const STORAGE_KEY  = "btc-liq-viz/v2";
+const DRAW_KEY     = "btc-liq-viz/drawings/v1";
+const DEFAULTS = Object.freeze({
+  thrPos: 3,
+  thrNeg: -3,
+  maFast: 720,
+  maSlow: 8400,
+  markers: true,
+});
 
 const els = {
-  status:  document.getElementById("status"),
-  gate:    document.getElementById("gate"),
-  form:    document.getElementById("gate-form"),
-  input:   document.getElementById("gate-input"),
-  error:   document.getElementById("gate-error"),
-  card:    null,
-  readout: document.getElementById("hover-info"),
+  status:   document.getElementById("status"),
+  gate:     document.getElementById("gate"),
+  form:     document.getElementById("gate-form"),
+  input:    document.getElementById("gate-input"),
+  error:    document.getElementById("gate-error"),
+  card:     null,
+  readout:  document.getElementById("hover-info"),
+  chart:    document.getElementById("chart"),
+  drawHint: document.getElementById("draw-hint"),
+  panel:    document.getElementById("settings-panel"),
+  lblFast:  document.getElementById("lbl-ma-fast"),
+  lblSlow:  document.getElementById("lbl-ma-slow"),
+  thrPos:   document.getElementById("sp-thr-pos"),
+  thrNeg:   document.getElementById("sp-thr-neg"),
+  maFast:   document.getElementById("sp-ma-fast"),
+  maSlow:   document.getElementById("sp-ma-slow"),
+  markers:  document.getElementById("sp-markers"),
+  btnHLine: document.getElementById("tool-hline"),
+  btnTrend: document.getElementById("tool-trend"),
+  btnClear: document.getElementById("tool-clear"),
+  btnFit:   document.getElementById("tool-fit"),
+  btnGear:  document.getElementById("tool-settings"),
+  btnClose: document.getElementById("sp-close"),
+  btnApply: document.getElementById("sp-apply"),
+  btnReset: document.getElementById("sp-reset"),
 };
 els.card = els.form.querySelector(".gate-card");
 
@@ -19,6 +50,40 @@ const fmtSign = n => n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(3);
 function setStatus(text, cls = "") {
   els.status.textContent = text;
   els.status.className = "status " + cls;
+}
+
+// --------------------------------------------------------------------------
+// Settings (localStorage-backed)
+// --------------------------------------------------------------------------
+let settings = loadSettings();
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+  } catch (e) { /* ignore */ }
+  return { ...DEFAULTS };
+}
+
+function saveSettings() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (e) {}
+}
+
+function applySettingsToForm() {
+  els.thrPos.value  = settings.thrPos;
+  els.thrNeg.value  = settings.thrNeg;
+  els.maFast.value  = settings.maFast;
+  els.maSlow.value  = settings.maSlow;
+  els.markers.checked = settings.markers;
+}
+
+function readFormIntoSettings() {
+  settings.thrPos  = parseFloat(els.thrPos.value);
+  settings.thrNeg  = parseFloat(els.thrNeg.value);
+  settings.maFast  = parseInt(els.maFast.value, 10);
+  settings.maSlow  = parseInt(els.maSlow.value, 10);
+  settings.markers = els.markers.checked;
+  saveSettings();
 }
 
 // --------------------------------------------------------------------------
@@ -55,6 +120,7 @@ async function decryptPayload(envelope, password) {
 // --------------------------------------------------------------------------
 function sma(series, window) {
   const out = [];
+  if (window < 2 || series.length < window) return out;
   let sum = 0;
   for (let i = 0; i < series.length; i++) {
     sum += series[i].close;
@@ -65,14 +131,38 @@ function sma(series, window) {
 }
 
 // --------------------------------------------------------------------------
-// Chart
+// Chart state
 // --------------------------------------------------------------------------
-let chart, candleSeries, volSeries, liqSeries, ma720Series, ma8400Series;
+let chart;
+let candleSeries, volSeries, liqSeries, maFastSeries, maSlowSeries;
 let candleByTime = new Map();
 let recByTime = new Map();
+let allRecords = [];     // raw decrypted records, used on re-render
+let allCandles = [];
+let markerHandle = null;
 
+// Drawings: persisted to localStorage
+let drawings = loadDrawings();
+let drawSeriesList = [];   // active LineSeries handles for current drawings
+let drawMode = null;       // null | 'hline' | 'trend'
+let trendPending = null;   // first click of a trend line
+
+function loadDrawings() {
+  try {
+    const raw = localStorage.getItem(DRAW_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return [];
+}
+function saveDrawings() {
+  try { localStorage.setItem(DRAW_KEY, JSON.stringify(drawings)); } catch (e) {}
+}
+
+// --------------------------------------------------------------------------
+// Build chart
+// --------------------------------------------------------------------------
 function buildChart() {
-  chart = LightweightCharts.createChart(document.getElementById("chart"), {
+  chart = LightweightCharts.createChart(els.chart, {
     layout: {
       background: { type: "solid", color: "#0d1117" },
       textColor:  "#d9d9d9",
@@ -92,48 +182,153 @@ function buildChart() {
     autoSize: true,
   });
 
-  // Pane 0: candles + MAs
   candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
     upColor: "#26a69a", downColor: "#ef5350",
     borderUpColor: "#26a69a", borderDownColor: "#ef5350",
     wickUpColor: "#26a69a", wickDownColor: "#ef5350",
   }, 0);
 
-  ma720Series = chart.addSeries(LightweightCharts.LineSeries, {
+  maFastSeries = chart.addSeries(LightweightCharts.LineSeries, {
     color: "#2962ff", lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
   }, 0);
-  ma8400Series = chart.addSeries(LightweightCharts.LineSeries, {
+  maSlowSeries = chart.addSeries(LightweightCharts.LineSeries, {
     color: "#ff9800", lineWidth: 1, priceLineVisible: false, lastValueVisible: false,
   }, 0);
 
-  // Pane 1: volume
   volSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
     priceFormat: { type: "volume" },
     priceLineVisible: false, lastValueVisible: false,
   }, 1);
 
-  // Pane 2: signal histogram with reference lines
   liqSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
     priceFormat: { type: "price", precision: 2, minMove: 0.01 },
     priceLineVisible: false,
     base: 0,
   }, 2);
-  liqSeries.createPriceLine({ price: 3,  color: "rgba(38,166,154,0.45)", lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
-  liqSeries.createPriceLine({ price: -3, color: "rgba(239,83,80,0.45)",  lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
-  liqSeries.createPriceLine({ price: 0,  color: "rgba(217,217,217,0.25)", lineWidth: 1, lineStyle: 0, axisLabelVisible: false });
 
-  // Pane heights: candles 60% / volume 15% / signal 25%
+  // Pane heights
   const panes = chart.panes();
   if (panes.length >= 3) {
-    const total = window.innerHeight - 64;
+    const total = window.innerHeight - 66;
     panes[0].setHeight(Math.round(total * 0.60));
     panes[1].setHeight(Math.round(total * 0.15));
     panes[2].setHeight(Math.round(total * 0.25));
   }
 
   chart.subscribeCrosshairMove(onCrosshair);
+  chart.subscribeClick(onClick);
 }
 
+// --------------------------------------------------------------------------
+// Render data + re-render hooks
+// --------------------------------------------------------------------------
+function colorForLiq(v) {
+  if (v == null) return "rgba(120,120,120,0.45)";
+  if (v >=  settings.thrPos) return "rgba(38,166,154,0.95)";    // bright green
+  if (v <=  settings.thrNeg) return "rgba(239,83,80,0.95)";     // bright red
+  if (v >= 0) return "rgba(38,166,154,0.30)";                   // muted green
+  return "rgba(239,83,80,0.30)";                                // muted red
+}
+
+function renderAll(records) {
+  allRecords = records;
+  allCandles = [];
+  const volumes = [];
+  for (const r of records) {
+    if (!r.k) continue;
+    const [o, h, l, c, v] = r.k;
+    allCandles.push({ time: r.t, open: o, high: h, low: l, close: c });
+    volumes.push({
+      time: r.t,
+      value: v,
+      color: c >= o ? "rgba(38,166,154,0.55)" : "rgba(239,83,80,0.55)",
+    });
+  }
+  candleByTime = new Map(allCandles.map(c => [c.time, c]));
+  recByTime   = new Map(records.map(r => [r.t, r]));
+
+  candleSeries.setData(allCandles);
+  volSeries.setData(volumes);
+  refreshMAs();
+  refreshLiqBars();
+  refreshLiqRefLines();
+  refreshMarkers();
+  refreshLegend();
+  applyDrawingsToChart();
+
+  chart.timeScale().fitContent();
+  setStatus(`ok · ${allCandles.length.toLocaleString()} bars`, "ok");
+}
+
+function refreshMAs() {
+  maFastSeries.setData(sma(allCandles, settings.maFast));
+  maSlowSeries.setData(sma(allCandles, settings.maSlow));
+}
+
+function refreshLiqBars() {
+  const bars = allRecords.map(r => ({
+    time: r.t,
+    value: r.l == null ? 0 : r.l,
+    color: colorForLiq(r.l),
+  }));
+  liqSeries.setData(bars);
+}
+
+// Re-create reference lines whenever thresholds change
+let refLineHandles = [];
+function refreshLiqRefLines() {
+  for (const h of refLineHandles) {
+    try { liqSeries.removePriceLine(h); } catch (e) {}
+  }
+  refLineHandles = [];
+  refLineHandles.push(liqSeries.createPriceLine({
+    price: settings.thrPos, color: "rgba(38,166,154,0.55)",
+    lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `+${settings.thrPos}`
+  }));
+  refLineHandles.push(liqSeries.createPriceLine({
+    price: settings.thrNeg, color: "rgba(239,83,80,0.55)",
+    lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `${settings.thrNeg}`
+  }));
+  refLineHandles.push(liqSeries.createPriceLine({
+    price: 0, color: "rgba(217,217,217,0.25)",
+    lineWidth: 1, lineStyle: 0, axisLabelVisible: false
+  }));
+}
+
+function refreshMarkers() {
+  if (markerHandle) {
+    try { markerHandle.detach(); } catch (e) {}
+    markerHandle = null;
+  }
+  if (!settings.markers) return;
+  const markers = [];
+  for (const r of allRecords) {
+    if (r.l == null || !candleByTime.has(r.t)) continue;
+    if (r.l >= settings.thrPos) {
+      markers.push({
+        time: r.t, position: "belowBar", color: "#26a69a",
+        shape: "arrowUp", size: 1,
+      });
+    } else if (r.l <= settings.thrNeg) {
+      markers.push({
+        time: r.t, position: "aboveBar", color: "#ef5350",
+        shape: "arrowDown", size: 1,
+      });
+    }
+  }
+  if (markers.length) {
+    markerHandle = LightweightCharts.createSeriesMarkers(candleSeries, markers);
+  }
+}
+
+function refreshLegend() {
+  els.lblFast.textContent = `MA${settings.maFast}`;
+  els.lblSlow.textContent = `MA${settings.maSlow}`;
+}
+
+// --------------------------------------------------------------------------
+// Crosshair readout
+// --------------------------------------------------------------------------
 function onCrosshair(param) {
   if (!param || !param.time) {
     els.readout.textContent = "hover the chart";
@@ -158,43 +353,142 @@ function onCrosshair(param) {
   els.readout.innerHTML = html;
 }
 
-function renderFromRecords(records) {
-  // Build candles + volumes from inline OHLCV
-  const candles = [];
-  const volumes = [];
-  for (const r of records) {
-    if (!r.k) continue;
-    const [o, h, l, c, v] = r.k;
-    const candle = { time: r.t, open: o, high: h, low: l, close: c };
-    candles.push(candle);
-    volumes.push({
-      time: r.t,
-      value: v,
-      color: c >= o ? "rgba(38,166,154,0.55)" : "rgba(239,83,80,0.55)",
-    });
+// --------------------------------------------------------------------------
+// Drawing tools
+// --------------------------------------------------------------------------
+function setDrawMode(mode) {
+  drawMode = mode;
+  trendPending = null;
+  els.btnHLine.classList.toggle("active", mode === "hline");
+  els.btnTrend.classList.toggle("active", mode === "trend");
+  els.chart.classList.toggle("crosshair", !!mode);
+  if (mode === "hline") {
+    els.drawHint.textContent = "click chart to place a horizontal line";
+    els.drawHint.classList.remove("hidden");
+  } else if (mode === "trend") {
+    els.drawHint.textContent = "click first point of trend line";
+    els.drawHint.classList.remove("hidden");
+  } else {
+    els.drawHint.classList.add("hidden");
+  }
+}
+
+function onClick(param) {
+  if (!drawMode) return;
+  if (!param.point || param.time == null) return;
+  // price from candle series
+  const price = candleSeries.coordinateToPrice(param.point.y);
+  if (price == null) return;
+  const t = param.time;
+
+  if (drawMode === "hline") {
+    drawings.push({ kind: "hline", price });
+    saveDrawings();
+    applyDrawingsToChart();
+    setDrawMode(null);
+    return;
   }
 
-  candleByTime = new Map(candles.map(c => [c.time, c]));
-  recByTime   = new Map(records.map(r => [r.t, r]));
+  if (drawMode === "trend") {
+    if (!trendPending) {
+      trendPending = { time: t, price };
+      els.drawHint.textContent = "click second point";
+      return;
+    }
+    drawings.push({
+      kind: "trend",
+      a: trendPending,
+      b: { time: t, price },
+    });
+    trendPending = null;
+    saveDrawings();
+    applyDrawingsToChart();
+    setDrawMode(null);
+  }
+}
 
-  candleSeries.setData(candles);
-  volSeries.setData(volumes);
-  ma720Series.setData(sma(candles, 720));
-  ma8400Series.setData(sma(candles, 8400));
+function applyDrawingsToChart() {
+  // Remove all existing drawing series
+  for (const s of drawSeriesList) {
+    try { chart.removeSeries(s); } catch (e) {}
+  }
+  drawSeriesList = [];
+  if (!allCandles.length) return;
+  const firstT = allCandles[0].time;
+  const lastT  = allCandles[allCandles.length - 1].time;
 
-  const liqBars = records.map(r => ({
-    time: r.t,
-    value: r.l == null ? 0 : r.l,
-    color: (r.l ?? 0) >= 0 ? "rgba(38,166,154,0.85)" : "rgba(239,83,80,0.85)",
-  }));
-  liqSeries.setData(liqBars);
+  for (const d of drawings) {
+    const s = chart.addSeries(LightweightCharts.LineSeries, {
+      color: d.kind === "hline" ? "#aab8ff" : "#ffd778",
+      lineWidth: 1,
+      lineStyle: d.kind === "hline" ? 2 : 0,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    }, 0);
+    if (d.kind === "hline") {
+      s.setData([
+        { time: firstT, value: d.price },
+        { time: lastT,  value: d.price },
+      ]);
+    } else {
+      const pts = [{ time: d.a.time, value: d.a.price },
+                   { time: d.b.time, value: d.b.price }];
+      pts.sort((p, q) => p.time - q.time);
+      s.setData(pts);
+    }
+    drawSeriesList.push(s);
+  }
+}
 
-  chart.timeScale().fitContent();
-  setStatus(`ok · ${candles.length.toLocaleString()} bars`, "ok");
+function clearAllDrawings() {
+  drawings = [];
+  saveDrawings();
+  applyDrawingsToChart();
 }
 
 // --------------------------------------------------------------------------
-// Entry
+// Toolbar wiring
+// --------------------------------------------------------------------------
+function wireToolbar() {
+  els.btnHLine.addEventListener("click", () =>
+    setDrawMode(drawMode === "hline" ? null : "hline"));
+  els.btnTrend.addEventListener("click", () =>
+    setDrawMode(drawMode === "trend" ? null : "trend"));
+  els.btnClear.addEventListener("click", () => {
+    if (drawings.length && confirm(`Clear ${drawings.length} drawing(s)?`)) {
+      clearAllDrawings();
+    }
+  });
+  els.btnFit.addEventListener("click", () => chart.timeScale().fitContent());
+  els.btnGear.addEventListener("click", () => togglePanel(true));
+  els.btnClose.addEventListener("click", () => togglePanel(false));
+  els.btnApply.addEventListener("click", () => {
+    readFormIntoSettings();
+    refreshMAs();
+    refreshLiqBars();
+    refreshLiqRefLines();
+    refreshMarkers();
+    refreshLegend();
+  });
+  els.btnReset.addEventListener("click", () => {
+    settings = { ...DEFAULTS };
+    saveSettings();
+    applySettingsToForm();
+    refreshMAs();
+    refreshLiqBars();
+    refreshLiqRefLines();
+    refreshMarkers();
+    refreshLegend();
+  });
+}
+
+function togglePanel(open) {
+  els.panel.classList.toggle("hidden", !open);
+}
+
+// --------------------------------------------------------------------------
+// Entry: gate -> decrypt -> render
 // --------------------------------------------------------------------------
 let envelopePromise = null;
 async function getEnvelope() {
@@ -222,7 +516,10 @@ async function handleSubmit(e) {
     els.gate.classList.add("hidden");
     setTimeout(() => els.gate.remove(), 400);
     buildChart();
-    renderFromRecords(data.records);
+    applySettingsToForm();
+    refreshLegend();
+    wireToolbar();
+    renderAll(data.records);
   } catch (err) {
     btn.disabled = false;
     btn.textContent = "unlock";
@@ -236,5 +533,4 @@ async function handleSubmit(e) {
 }
 
 els.form.addEventListener("submit", handleSubmit);
-// Warm-fetch while the user types
 getEnvelope().catch(() => {});
